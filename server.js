@@ -18,6 +18,10 @@ const rooms = new Map();
 wss.on('connection', (ws) => {
   console.log('New client connected');
   
+  // Initialize connection health tracking
+  ws.isAlive = true;
+  ws.lastHeartbeat = Date.now();
+  
   ws.on('message', (data) => {
     try {
       const message = JSON.parse(data);
@@ -32,12 +36,21 @@ wss.on('connection', (ws) => {
         case 'leave':
           handleLeave(ws);
           break;
+        case 'heartbeat':
+          handleHeartbeat(ws, message);
+          break;
         default:
           console.log('Unknown message type:', message.type);
       }
     } catch (error) {
       console.error('Error parsing message:', error);
     }
+  });
+  
+  // Handle pong responses from client
+  ws.on('pong', () => {
+    ws.isAlive = true;
+    ws.lastHeartbeat = Date.now();
   });
   
   ws.on('close', () => {
@@ -130,6 +143,17 @@ function handleLeave(ws) {
   }
 }
 
+function handleHeartbeat(ws, message) {
+  ws.isAlive = true;
+  ws.lastHeartbeat = Date.now();
+  
+  // Send pong response to client
+  ws.send(JSON.stringify({
+    type: 'pong',
+    timestamp: Date.now()
+  }));
+}
+
 function broadcast(room, message, excludeWs = null) {
   const roomClients = rooms.get(room);
   if (!roomClients) return;
@@ -148,11 +172,43 @@ server.listen(PORT, () => {
   console.log(`WebSocket endpoint: ws://localhost:${PORT}`);
 });
 
-// Keep alive
+// Connection health monitoring
+const PING_INTERVAL = 30000;  // 30 seconds
+const CONNECTION_TIMEOUT = 45000;  // 45 seconds
+
 setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) {
+      // Check if connection is stale
+      const timeSinceLastHeartbeat = Date.now() - ws.lastHeartbeat;
+      
+      if (timeSinceLastHeartbeat > CONNECTION_TIMEOUT) {
+        console.log(`⚠️ Client timeout detected (${timeSinceLastHeartbeat}ms since last heartbeat)`);
+        if (ws.player_id) {
+          console.log(`  Terminating player: ${ws.player_id}`);
+        }
+        ws.terminate();
+        handleLeave(ws);
+        return;
+      }
+      
+      // Mark as potentially dead, will be confirmed alive by pong
+      ws.isAlive = false;
       ws.ping();
     }
   });
-}, 30000);
+  
+  // Second pass: Terminate connections that didn't respond to ping
+  setTimeout(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN && !ws.isAlive) {
+        console.log('⚠️ Client did not respond to ping, terminating');
+        if (ws.player_id) {
+          console.log(`  Player: ${ws.player_id}`);
+        }
+        ws.terminate();
+        handleLeave(ws);
+      }
+    });
+  }, 5000);  // Wait 5s for pong response
+}, PING_INTERVAL);
