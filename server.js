@@ -118,7 +118,9 @@ function handleSync(ws, message) {
     v: message.v,  // velocity
     s: message.s,  // score
     h: message.h,  // height
-    c: message.c   // combo
+    c: message.c,  // combo
+    stocks: message.stocks,              // stocks remaining
+    is_spectator: message.is_spectator   // spectator status
   }, ws);
 }
 
